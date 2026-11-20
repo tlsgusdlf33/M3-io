@@ -1,0 +1,21 @@
+# 빌드가 성공하면 공개 로그를 지운다. 실패했을 때는 원인 확인을 위해 남겨 둔다.
+name: Cleanup public logs
+
+on:
+  workflow_run:
+    workflows: ['Build from M3']
+    types: [completed]
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete build logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: gh api -X DELETE "repos/${{ github.repository }}/actions/runs/${RUN_ID}/logs"

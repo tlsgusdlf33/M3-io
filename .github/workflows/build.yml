@@ -1,0 +1,104 @@
+# 공개 저장소(M3-io)에서 비공개 저장소(M3)의 코드를 받아 빌드·서명하고, 결과물은 M3 Releases에만 올린다.
+# 이 저장소에는 게임 코드와 서명 키를 두지 않는다. 수동 실행(workflow_dispatch)으로만 동작한다.
+name: Build from M3
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: 'M3의 apps 아래 앱 폴더 이름'
+        required: true
+        default: poksin-bakery
+      ref:
+        description: 'M3의 브랜치 또는 커밋'
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-from-m3
+  cancel-in-progress: false
+
+env:
+  M3_REPO: tlsgusdlf33/claude-M3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check inputs
+        env:
+          APP: ${{ inputs.app }}
+        run: |
+          echo "$APP" | grep -Eq '^[a-z0-9-]+$' || { echo "앱 이름 형식이 올바르지 않습니다"; exit 1; }
+
+      - name: Check this public repo has no keys or game code
+        uses: actions/checkout@v4
+        with:
+          path: pub
+      - name: Scan public repo
+        run: |
+          cd pub
+          bad=$(git ls-files | grep -Ei '\.(keystore|jks|p12|pfx|pem)$|keystore\.properties|(^|/)index\.html$|\.java$|build\.gradle$' || true)
+          if [ -n "$bad" ]; then echo "공개 저장소에 올라가면 안 되는 파일이 있습니다:"; echo "$bad"; exit 1; fi
+          if git grep -nEi 'storePassword|keyPassword|BEGIN (RSA |EC )?PRIVATE KEY' -- . ':!.github/workflows/build.yml' ':!.github/workflows/cleanup-logs.yml' | grep -q .; then echo "공개 저장소에 비밀번호 흔적이 있습니다"; exit 1; fi
+
+      - name: Get code and keys from M3
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.M3_REPO }}
+          token: ${{ secrets.M3_TOKEN }}
+          ref: ${{ inputs.ref }}
+          path: src
+          persist-credentials: false
+
+      - name: Mask secrets
+        run: |
+          f=src/signing/keystore.properties
+          test -f "$f" || { echo "서명 설정 파일이 없습니다"; exit 1; }
+          while IFS='=' read -r k v; do
+            [ -n "$v" ] && echo "::add-mask::$v"
+          done < "$f"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      - name: Build and sign APK
+        env:
+          APP: ${{ inputs.app }}
+          RUN: ${{ github.run_number }}
+        run: |
+          VC=$((100 + RUN))
+          cd "src/apps/$APP"
+          gradle assembleRelease --no-daemon --quiet -PappVersionCode=$VC
+          echo "VC=$VC" >> "$GITHUB_ENV"
+
+      - name: Verify signature
+        env:
+          APP: ${{ inputs.app }}
+        run: |
+          APK="src/apps/$APP/app/build/outputs/apk/release/app-release.apk"
+          AS=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort | tail -1)
+          "$AS" verify "$APK" && echo "서명 확인 완료"
+          cp "$APK" "$APP.apk"
+
+      - name: Publish to M3 releases and delete older ones
+        env:
+          GH_TOKEN: ${{ secrets.M3_TOKEN }}
+          APP: ${{ inputs.app }}
+        run: |
+          SHA=$(git -C src rev-parse HEAD)
+          TAG="${APP}-v1.0.${VC}"
+          gh release create "$TAG" "$APP.apk" -R "$M3_REPO" --target "$SHA" \
+            --title "$APP v1.0.${VC}" \
+            --notes "최신 빌드입니다. 폰에서 ${APP}.apk를 받아 설치하세요."
+          gh release list -R "$M3_REPO" --limit 100 --json tagName \
+            --jq ".[] | select(.tagName | startswith(\"${APP}-v\")) | select(.tagName != \"${TAG}\") | .tagName" \
+            | while read -r OLD; do gh release delete "$OLD" -R "$M3_REPO" --cleanup-tag --yes; done
