@@ -83,7 +83,7 @@ jobs:
             echo "google-services.json 없음: 계정 연동 없이 빌드합니다"
           fi
           cd "src/apps/$APP"
-          gradle assembleRelease --no-daemon --quiet -PappVersionCode=$VC
+          gradle assembleRelease bundleRelease --no-daemon --quiet -PappVersionCode=$VC
           echo "VC=$VC" >> "$GITHUB_ENV"
 
       - name: Verify signature
@@ -94,6 +94,7 @@ jobs:
           AS=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort | tail -1)
           "$AS" verify "$APK" && echo "서명 확인 완료"
           cp "$APK" "$APP.apk"
+          cp "src/apps/$APP/app/build/outputs/bundle/release/app-release.aab" "$APP.aab"
 
       - name: Publish to M3 releases and delete older ones
         env:
@@ -102,9 +103,9 @@ jobs:
         run: |
           SHA=$(git -C src rev-parse HEAD)
           TAG="${APP}-v1.0.${VC}"
-          gh release create "$TAG" "$APP.apk" -R "$M3_REPO" --target "$SHA" \
+          gh release create "$TAG" "$APP.apk" "$APP.aab" -R "$M3_REPO" --target "$SHA" \
             --title "$APP v1.0.${VC}" \
-            --notes "최신 빌드입니다. 폰에서 ${APP}.apk를 받아 설치하세요."
+            --notes "최신 빌드입니다. 폰 설치용 ${APP}.apk, 구글 플레이 업로드용 ${APP}.aab 입니다."
           gh release list -R "$M3_REPO" --limit 100 --json tagName \
             --jq ".[] | select(.tagName | startswith(\"${APP}-v\")) | select(.tagName != \"${TAG}\") | .tagName" \
             | while read -r OLD; do gh release delete "$OLD" -R "$M3_REPO" --cleanup-tag --yes; done
