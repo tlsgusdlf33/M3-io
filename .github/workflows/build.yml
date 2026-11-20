@@ -76,6 +76,12 @@ jobs:
           RUN: ${{ github.run_number }}
         run: |
           VC=$((100 + RUN))
+          if [ -f src/signing/google-services.json ]; then
+            cp src/signing/google-services.json "src/apps/$APP/app/google-services.json"
+            echo "구글 계정 연동 설정을 적용했습니다"
+          else
+            echo "google-services.json 없음: 계정 연동 없이 빌드합니다"
+          fi
           cd "src/apps/$APP"
           gradle assembleRelease --no-daemon --quiet -PappVersionCode=$VC
           echo "VC=$VC" >> "$GITHUB_ENV"
